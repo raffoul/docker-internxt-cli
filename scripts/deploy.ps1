@@ -1,7 +1,10 @@
-# Deploy multi-architecture Docker images to Docker Hub
+# Deploy multi-architecture Docker images to GitHub Container Registry (ghcr.io)
 param(
     [Parameter(Mandatory=$false)]
-    [string]$DockerUsername = $env:DOCKER_USERNAME,
+    [string]$GithubUsername = $env:GITHUB_USERNAME,
+    
+    [Parameter(Mandatory=$false)]
+    [string]$GithubToken = $env:GITHUB_TOKEN,
     
     [Parameter(Mandatory=$false)]
     [string]$ImageName = "internxt-cli",
@@ -11,19 +14,47 @@ param(
 )
 
 Write-Host "Starting multi-architecture build and deployment workflow" -ForegroundColor Green
+Write-Host "Target: GitHub Container Registry (ghcr.io)" -ForegroundColor Cyan
 
-# Check if Docker username is provided
-if ([string]::IsNullOrEmpty($DockerUsername)) {
-    Write-Host "Please provide Docker Hub username:" -ForegroundColor Yellow
-    $DockerUsername = Read-Host "Docker Username"
+# Load .env file if exists
+$envFile = Join-Path $PSScriptRoot "..\\.env"
+if (Test-Path $envFile) {
+    Write-Host "Loading credentials from .env file..." -ForegroundColor Gray
+    Get-Content $envFile | ForEach-Object {
+        if ($_ -match '^([^=]+)=(.+)$') {
+            $name = $matches[1].Trim()
+            $value = $matches[2].Trim()
+            if ([string]::IsNullOrEmpty((Get-Variable -Name "env:$name" -ValueOnly -ErrorAction SilentlyContinue))) {
+                Set-Item -Path "env:$name" -Value $value
+            }
+        }
+    }
+    if ([string]::IsNullOrEmpty($GithubUsername)) { $GithubUsername = $env:GITHUB_USERNAME }
+    if ([string]::IsNullOrEmpty($GithubToken)) { $GithubToken = $env:GITHUB_TOKEN }
 }
 
-# Login to Docker Hub
-Write-Host "Logging in to Docker Hub..." -ForegroundColor Yellow
-docker login
+# Check if GitHub username is provided
+if ([string]::IsNullOrEmpty($GithubUsername)) {
+    Write-Host "Please provide your GitHub username:" -ForegroundColor Yellow
+    $GithubUsername = Read-Host "GitHub Username"
+}
+
+$GithubUsername = $GithubUsername.ToLower()
+
+# Login to GitHub Container Registry
+Write-Host "Logging in to ghcr.io as $GithubUsername..." -ForegroundColor Yellow
+
+if ([string]::IsNullOrEmpty($GithubToken)) {
+    Write-Host "You need a GitHub Personal Access Token (PAT) with 'write:packages' scope" -ForegroundColor Yellow
+    Write-Host "Create one at: https://github.com/settings/tokens/new?scopes=write:packages" -ForegroundColor Gray
+    docker login ghcr.io -u $GithubUsername
+} else {
+    Write-Host "Using token from environment..." -ForegroundColor Gray
+    $GithubToken | docker login ghcr.io -u $GithubUsername --password-stdin
+}
 
 if ($LASTEXITCODE -ne 0) {
-    Write-Error "Docker login failed"
+    Write-Error "GitHub Container Registry login failed"
     exit 1
 }
 
@@ -64,7 +95,7 @@ $PLATFORMS = "linux/amd64,linux/arm64,linux/ppc64le,linux/s390x"
 # Build and push images
 if ($Test) {
     # Test/branch build
-    $IMAGE_TAG = "${DockerUsername}/${ImageName}-test:${BRANCH_NAME}-${INTERNXT_CLI_VERSION}"
+    $IMAGE_TAG = "ghcr.io/${GithubUsername}/${ImageName}-test:${BRANCH_NAME}-${INTERNXT_CLI_VERSION}"
     Write-Host "Building and pushing TEST image: $IMAGE_TAG" -ForegroundColor Yellow
     Write-Host "Platforms: $PLATFORMS" -ForegroundColor Gray
     
@@ -76,7 +107,7 @@ if ($Test) {
         --push .
 } else {
     # Production build (main/master branch)
-    $IMAGE_BASE = "${DockerUsername}/${ImageName}"
+    $IMAGE_BASE = "ghcr.io/${GithubUsername}/${ImageName}"
     $IMAGE_TAG_VERSION = "${IMAGE_BASE}:${INTERNXT_CLI_VERSION}"
     $IMAGE_TAG_LATEST = "${IMAGE_BASE}:latest"
     
@@ -98,7 +129,7 @@ if ($LASTEXITCODE -eq 0) {
     Write-Host ""
     Write-Host "Deployment completed successfully!" -ForegroundColor Green
     Write-Host ""
-    Write-Host "Images have been pushed to Docker Hub for the following architectures:" -ForegroundColor Cyan
+    Write-Host "Images have been pushed to GitHub Container Registry for the following architectures:" -ForegroundColor Cyan
     Write-Host "  - linux/amd64 (x86_64)" -ForegroundColor White
     Write-Host "  - linux/arm64 (ARM 64-bit)" -ForegroundColor White
     Write-Host "  - linux/ppc64le (PowerPC 64-bit)" -ForegroundColor White
@@ -111,6 +142,10 @@ if ($LASTEXITCODE -eq 0) {
         Write-Host "  docker pull $IMAGE_TAG_LATEST" -ForegroundColor White
         Write-Host "  docker pull $IMAGE_TAG_VERSION" -ForegroundColor White
     }
+    Write-Host ""
+    Write-Host "View your packages at: https://github.com/$GithubUsername?tab=packages" -ForegroundColor Cyan
+    Write-Host ""
+    Write-Host "To make the image public, go to package settings and change visibility" -ForegroundColor Yellow
 } else {
     Write-Error "Deployment failed with exit code $LASTEXITCODE"
     exit $LASTEXITCODE
